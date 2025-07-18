@@ -8,6 +8,7 @@ import os
 
 from ..core.world import Simulation
 from ..core.masks import IssueMasks
+from ..core.config import SimulationConfig, AgentConfig, DistortionConfig
 
 
 def run_baseline_simulation(
@@ -47,26 +48,29 @@ def run_baseline_simulation(
     print(f"Running baseline simulation with {n_agents} agents for {n_steps} steps...")
     print(f"Parameters: γ={gamma}, λ={lambda_align}, κ={kappa_noise}")
     
-    agent_params = {
-        'alpha': alpha,
-        'lambda_align': lambda_align,
-        'kappa_noise': kappa_noise,
-        'eta_momentum': 0.1,
-        'sigma_base': 0.01
-    }
-    
-    distortion_params = {
-        'gamma': gamma
-    }
-    
-    sim = Simulation(
+    # Use new config-based API for cleaner setup
+    config = SimulationConfig(
         n_agents=n_agents,
         state_dim=state_dim,
         worldview_dim=worldview_dim,
-        agent_params=agent_params,
-        distortion_params=distortion_params,
-        seed=seed
+        seed=seed,
+        agent=AgentConfig(
+            alpha=alpha,
+            lambda_align=lambda_align,
+            kappa_noise=kappa_noise,
+            eta_momentum=0.1,
+            sigma_base=0.01,
+            gamma=gamma,
+            use_analytic_gradient=True
+        ),
+        distortion=DistortionConfig(
+            state_dim=state_dim,
+            worldview_dim=worldview_dim,
+            gamma=gamma
+        )
     )
+    
+    sim = Simulation(config=config)
     
     event_schedule = {}
     mask_gen = IssueMasks(worldview_dim)
@@ -76,7 +80,8 @@ def run_baseline_simulation(
             event = mask_gen.generate_event(intensity=event_intensity)
             event_schedule[t] = event
     
-    metrics = sim.run(n_steps, event_schedule, verbose=True)
+    # Use optimized metrics computation (every 10 steps instead of every step)
+    metrics = sim.run(n_steps, event_schedule, verbose=True, metrics_every=10)
     
     if save_path:
         sim.save_state(save_path)

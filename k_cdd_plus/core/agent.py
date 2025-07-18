@@ -8,6 +8,8 @@ from .state import BaseUtility
 from .distortions import DistortionTransform
 from .kernels import SocialKernel
 from .masks import IssueMasks
+from .irrationality import IrrationalityComputer
+from .irrationality_gradient import IrrationalityGradientComputer
 
 
 @dataclass
@@ -38,7 +40,10 @@ class Agent:
                  lambda_align: float = 1.0,
                  eta_momentum: float = 0.1,
                  kappa_noise: float = 1.0,
-                 sigma_base: float = 0.01):
+                 sigma_base: float = 0.01,
+                 gamma: float = 0.5,
+                 use_analytic_gradient: bool = True,
+                 seed: Optional[int] = None):
         """
         Initialize agent.
         
@@ -63,16 +68,28 @@ class Agent:
         self.eta_momentum = eta_momentum
         self.kappa_noise = kappa_noise
         self.sigma_base = sigma_base
+        self.gamma = gamma
+        self.use_analytic_gradient = use_analytic_gradient
+        
+        # Initialize gradient computer for irrationality
+        self.ir_computer = IrrationalityComputer(state_dim)
+        if use_analytic_gradient:
+            self.grad_computer = IrrationalityGradientComputer(
+                state_dim, worldview_dim, gamma=gamma
+            )
+        
+        # Initialize per-agent random number generator for reproducibility
+        self.rng = np.random.RandomState(seed=agent_id + 1000 if seed is None else seed + agent_id)
         
         if initial_theta is None:
-            self.theta = np.random.randn(worldview_dim) * 0.5
+            self.theta = self.rng.randn(worldview_dim) * 0.5
         else:
             self.theta = initial_theta.copy()
         
         self.theta_prev = self.theta.copy()
         
         if sensitivity_profile is None:
-            self.sensitivity = np.random.rand(worldview_dim)
+            self.sensitivity = self.rng.rand(worldview_dim)
         else:
             self.sensitivity = sensitivity_profile.copy()
         
@@ -109,8 +126,7 @@ class Agent:
                                utility: BaseUtility,
                                distortion: DistortionTransform) -> float:
         """
-        Compute perceived irrationality IR_{i←j,t}.
-        Simplified version - full KL divergence computation would require action distributions.
+        Compute perceived irrationality IR_{i←j,t} using KL divergence.
         
         Args:
             other_agent: Agent j being evaluated
@@ -119,17 +135,19 @@ class Agent:
             distortion: Distortion transform
             
         Returns:
-            Irrationality measure
+            Irrationality measure (KL divergence)
         """
-        other_perceived = other_agent.perceive_gradient(utility.gradient(state), distortion)
+        true_gradient = utility.gradient(state)
         
-        T_other_from_my_view = distortion(other_agent.theta)
-        expected_gradient = T_other_from_my_view @ utility.gradient(state)
+        # My perceived gradient
+        my_perceived = self.perceive_gradient(true_gradient, distortion)
         
-        difference = other_perceived - expected_gradient
-        irrationality = np.linalg.norm(difference)
+        # How I expect other agent to perceive (using their worldview)
+        T_other = distortion(other_agent.theta)
+        expected_other_gradient = T_other @ true_gradient
         
-        return irrationality
+        # Compute KL divergence between action distributions
+        return self.ir_computer.compute_irrationality(my_perceived, expected_other_gradient)
     
     def social_pull(self,
                    other_agents: List['Agent'],
@@ -167,7 +185,7 @@ class Agent:
                              distortion: DistortionTransform) -> np.ndarray:
         """
         Compute gradient of total perceived irrationality w.r.t. own worldview.
-        Simplified finite difference approximation.
+        Uses analytic gradient when available, falls back to finite differences.
         
         Args:
             other_agents: List of other agents
@@ -178,27 +196,37 @@ class Agent:
         Returns:
             Gradient vector in worldview space
         """
-        eps = 1e-6
-        grad = np.zeros(self.worldview_dim)
-        
-        base_ir = sum(self.compute_irrationality_to(other, state, utility, distortion)
-                     for other in other_agents if other.id != self.id)
-        
-        for i in range(self.worldview_dim):
-            theta_plus = self.theta.copy()
-            theta_plus[i] += eps
+        if self.use_analytic_gradient and hasattr(self, 'grad_computer'):
+            # Use analytic gradient computation
+            all_thetas = np.array([agent.theta for agent in [self] + other_agents])
+            agent_idx = 0  # Self is first in the list
             
-            theta_original = self.theta.copy()
-            self.theta = theta_plus
+            return self.grad_computer.compute_total_irrationality_gradient(
+                agent_idx, all_thetas, utility.gradient(state), distortion
+            )
+        else:
+            # Fallback to finite differences (original implementation)
+            eps = 1e-6
+            grad = np.zeros(self.worldview_dim)
             
-            ir_plus = sum(self.compute_irrationality_to(other, state, utility, distortion)
+            base_ir = sum(self.compute_irrationality_to(other, state, utility, distortion)
                          for other in other_agents if other.id != self.id)
             
-            self.theta = theta_original
+            for i in range(self.worldview_dim):
+                theta_plus = self.theta.copy()
+                theta_plus[i] += eps
+                
+                theta_original = self.theta.copy()
+                self.theta = theta_plus
+                
+                ir_plus = sum(self.compute_irrationality_to(other, state, utility, distortion)
+                             for other in other_agents if other.id != self.id)
+                
+                self.theta = theta_original
+                
+                grad[i] = (ir_plus - base_ir) / eps
             
-            grad[i] = (ir_plus - base_ir) / eps
-        
-        return grad
+            return grad
     
     def compute_noise_covariance(self, local_density: float) -> np.ndarray:
         """
@@ -212,6 +240,18 @@ class Agent:
         """
         variance = self.sigma_base ** 2 * (1 + self.kappa_noise * local_density)
         return variance * np.eye(self.worldview_dim)
+    
+    def sample_noise(self, covariance: np.ndarray) -> np.ndarray:
+        """
+        Sample noise from covariance matrix using agent's RNG.
+        
+        Args:
+            covariance: Noise covariance matrix
+            
+        Returns:
+            Noise vector
+        """
+        return self.rng.multivariate_normal(np.zeros(self.worldview_dim), covariance)
     
     def update_worldview(self,
                         other_agents: List['Agent'],
@@ -254,7 +294,7 @@ class Agent:
                                self.alpha * momentum)
         
         covariance = self.compute_noise_covariance(local_density)
-        noise = np.random.multivariate_normal(np.zeros(self.worldview_dim), covariance)
+        noise = self.sample_noise(covariance)
         
         theta_new = self.theta + self.participation * deterministic_update + noise
         

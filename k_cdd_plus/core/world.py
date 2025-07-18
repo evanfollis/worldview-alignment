@@ -10,6 +10,7 @@ from .state import BaseUtility, StateSpace
 from .distortions import DistortionTransform
 from .kernels import SocialKernel
 from .masks import IssueMasks
+from .config import SimulationConfig
 
 
 class Simulation:
@@ -18,9 +19,10 @@ class Simulation:
     """
     
     def __init__(self,
-                 n_agents: int,
-                 state_dim: int,
-                 worldview_dim: int,
+                 config: Optional[SimulationConfig] = None,
+                 n_agents: Optional[int] = None,
+                 state_dim: Optional[int] = None,
+                 worldview_dim: Optional[int] = None,
                  utility_params: Optional[Dict] = None,
                  distortion_params: Optional[Dict] = None,
                  kernel_params: Optional[Dict] = None,
@@ -31,49 +33,100 @@ class Simulation:
         Initialize simulation.
         
         Args:
-            n_agents: Number of agents
-            state_dim: Dimension of state space (d)
-            worldview_dim: Dimension of worldview space (D)
-            utility_params: Parameters for base utility
-            distortion_params: Parameters for distortion transform
-            kernel_params: Parameters for social kernel
-            mask_params: Parameters for issue masks
-            agent_params: Parameters for agent dynamics
-            seed: Random seed for reproducibility
+            config: Complete simulation configuration (preferred)
+            n_agents: Number of agents (fallback)
+            state_dim: Dimension of state space (fallback)
+            worldview_dim: Dimension of worldview space (fallback)
+            utility_params: Parameters for base utility (legacy)
+            distortion_params: Parameters for distortion transform (legacy)
+            kernel_params: Parameters for social kernel (legacy)
+            mask_params: Parameters for issue masks (legacy)
+            agent_params: Parameters for agent dynamics (legacy)
+            seed: Random seed for reproducibility (legacy)
         """
+        # Handle both new config-based and legacy parameter-based initialization
+        if config is not None:
+            self.config = config
+            self.n_agents = config.n_agents
+            self.state_dim = config.state_dim
+            self.worldview_dim = config.worldview_dim
+            seed = config.seed
+        else:
+            # Legacy initialization
+            if n_agents is None or state_dim is None or worldview_dim is None:
+                raise ValueError("Must provide either config or n_agents/state_dim/worldview_dim")
+            
+            self.n_agents = n_agents
+            self.state_dim = state_dim
+            self.worldview_dim = worldview_dim
+            
+            # Create default config
+            from .config import UtilityConfig, DistortionConfig, KernelConfig, MaskConfig, AgentConfig
+            self.config = SimulationConfig(
+                n_agents=n_agents,
+                state_dim=state_dim,
+                worldview_dim=worldview_dim,
+                seed=seed,
+                utility=UtilityConfig(dim=state_dim, **(utility_params or {})),
+                distortion=DistortionConfig(
+                    state_dim=state_dim,
+                    worldview_dim=worldview_dim,
+                    **(distortion_params or {})
+                ),
+                kernel=KernelConfig(**(kernel_params or {})),
+                mask=MaskConfig(worldview_dim=worldview_dim, **(mask_params or {})),
+                agent=AgentConfig(**(agent_params or {}))
+            )
+        
         if seed is not None:
             np.random.seed(seed)
         
-        self.n_agents = n_agents
-        self.state_dim = state_dim
-        self.worldview_dim = worldview_dim
         self.t = 0
         
-        utility_params = utility_params or {}
-        self.utility = BaseUtility(dim=state_dim, **utility_params)
-        self.state_space = StateSpace(dim=state_dim)
+        # Initialize components using config
+        self.utility = BaseUtility(
+            dim=self.config.utility.dim,
+            utility_type=self.config.utility.utility_type,
+            center=self.config.utility.center,
+            scale=self.config.utility.scale
+        )
+        self.state_space = StateSpace(dim=self.state_dim)
         
-        distortion_params = distortion_params or {}
         self.distortion = DistortionTransform(
-            state_dim=state_dim,
-            worldview_dim=worldview_dim,
-            **distortion_params
+            state_dim=self.config.distortion.state_dim,
+            worldview_dim=self.config.distortion.worldview_dim,
+            gamma=self.config.distortion.gamma,
+            distortion_type=self.config.distortion.distortion_type
         )
         
-        kernel_params = kernel_params or {}
-        self.kernel = SocialKernel(**kernel_params)
+        self.kernel = SocialKernel(
+            sigma_align=self.config.kernel.sigma_align,
+            sigma_density=self.config.kernel.sigma_density,
+            kernel_type=self.config.kernel.kernel_type
+        )
         
-        mask_params = mask_params or {}
-        self.masks = IssueMasks(worldview_dim=worldview_dim, **mask_params)
+        self.masks = IssueMasks(
+            worldview_dim=self.config.mask.worldview_dim,
+            tau_value=self.config.mask.tau_value,
+            tau_participation=self.config.mask.tau_participation,
+            noise_scale=self.config.mask.noise_scale
+        )
         
-        agent_params = agent_params or {}
+        # Initialize agents
         self.agents = []
-        for i in range(n_agents):
+        for i in range(self.n_agents):
             agent = Agent(
                 agent_id=i,
-                worldview_dim=worldview_dim,
-                state_dim=state_dim,
-                **agent_params
+                worldview_dim=self.worldview_dim,
+                state_dim=self.state_dim,
+                alpha=self.config.agent.alpha,
+                lambda_align=self.config.agent.lambda_align,
+                eta_momentum=self.config.agent.eta_momentum,
+                kappa_noise=self.config.agent.kappa_noise,
+                sigma_base=self.config.agent.sigma_base,
+                gamma=self.config.agent.gamma,
+                use_analytic_gradient=self.config.agent.use_analytic_gradient,
+                seed=seed
             )
             self.agents.append(agent)
         
@@ -159,15 +212,18 @@ class Simulation:
         
         return np.mean(distances) if distances else 0.0
     
-    def step(self, event: Optional[np.ndarray] = None) -> Dict[str, float]:
+    def step(self, 
+             event: Optional[np.ndarray] = None, 
+             compute_metrics: bool = True) -> Dict[str, float]:
         """
         Execute one simulation step.
         
         Args:
             event: Event vector (None = no event)
+            compute_metrics: Whether to compute expensive metrics this step
             
         Returns:
-            Dictionary of current metrics
+            Dictionary of current metrics (empty if compute_metrics=False)
         """
         self.t += 1
         
@@ -192,6 +248,10 @@ class Simulation:
                 local_density=local_density
             )
         
+        if not compute_metrics:
+            return {}
+        
+        # Only compute expensive metrics when requested
         n_clusters, _ = self.compute_clusters()
         mean_ir = self.compute_mean_irrationality()
         diversity = self.compute_diversity()
@@ -215,7 +275,8 @@ class Simulation:
     def run(self, 
             n_steps: int,
             event_schedule: Optional[Dict[int, np.ndarray]] = None,
-            verbose: bool = True) -> Dict[str, List]:
+            verbose: bool = True,
+            metrics_every: int = 10) -> Dict[str, List]:
         """
         Run simulation for multiple steps.
         
@@ -223,6 +284,7 @@ class Simulation:
             n_steps: Number of steps to run
             event_schedule: Dictionary mapping time steps to events
             verbose: Whether to print progress
+            metrics_every: Compute metrics every N steps (for performance)
             
         Returns:
             Metrics history
@@ -233,9 +295,12 @@ class Simulation:
         
         for step in range(n_steps):
             event = event_schedule.get(step, None)
-            metrics = self.step(event)
             
-            if verbose and step % 100 == 0:
+            # Only compute metrics every metrics_every steps or at the end
+            compute_metrics = (step % metrics_every == 0) or (step == n_steps - 1)
+            metrics = self.step(event, compute_metrics=compute_metrics)
+            
+            if verbose and step % 100 == 0 and metrics:
                 elapsed = time.time() - start_time
                 print(f"Step {step}/{n_steps} - "
                       f"Clusters: {metrics['n_clusters']}, "

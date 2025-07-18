@@ -2,10 +2,9 @@
 
 import numpy as np
 from typing import Optional, Callable
-from numba import jit
+from scipy.spatial.distance import cdist
 
 
-@jit(nopython=True)
 def gaussian_kernel(distance: float, sigma: float) -> float:
     """
     Gaussian kernel function w(r) = exp(-r²/(2σ²)).
@@ -20,10 +19,23 @@ def gaussian_kernel(distance: float, sigma: float) -> float:
     return np.exp(-0.5 * (distance / sigma) ** 2)
 
 
-@jit(nopython=True)
+def gaussian_kernel_vectorized(distances: np.ndarray, sigma: float) -> np.ndarray:
+    """
+    Vectorized Gaussian kernel function.
+    
+    Args:
+        distances: Distance array or matrix
+        sigma: Kernel width parameter
+        
+    Returns:
+        Kernel values
+    """
+    return np.exp(-0.5 * (distances / sigma) ** 2)
+
+
 def compute_pairwise_distances(positions: np.ndarray) -> np.ndarray:
     """
-    Compute pairwise distances between all positions.
+    Compute pairwise distances between all positions using vectorized operations.
     
     Args:
         positions: Array of shape (n_agents, dim)
@@ -31,17 +43,7 @@ def compute_pairwise_distances(positions: np.ndarray) -> np.ndarray:
     Returns:
         Distance matrix of shape (n_agents, n_agents)
     """
-    n = positions.shape[0]
-    distances = np.zeros((n, n))
-    
-    for i in range(n):
-        for j in range(i + 1, n):
-            diff = positions[i] - positions[j]
-            dist = np.sqrt(np.sum(diff * diff))
-            distances[i, j] = dist
-            distances[j, i] = dist
-    
-    return distances
+    return cdist(positions, positions, metric='euclidean')
 
 
 class SocialKernel:
@@ -94,7 +96,7 @@ class SocialKernel:
         distances = compute_pairwise_distances(theta_positions)
         
         if self.kernel_type == "gaussian":
-            weights = np.exp(-0.5 * (distances / self.sigma_align) ** 2)
+            weights = gaussian_kernel_vectorized(distances, self.sigma_align)
         else:
             raise NotImplementedError(f"Kernel type {self.kernel_type} not implemented")
         
@@ -125,7 +127,7 @@ class SocialKernel:
     
     def density_field(self, all_thetas: np.ndarray) -> np.ndarray:
         """
-        Compute density at each agent's position.
+        Compute density at each agent's position using vectorized operations.
         
         Args:
             all_thetas: All worldview positions of shape (n_agents, worldview_dim)
@@ -133,18 +135,17 @@ class SocialKernel:
         Returns:
             Density values of shape (n_agents,)
         """
-        n_agents = all_thetas.shape[0]
-        densities = np.zeros(n_agents)
-        
         distances = compute_pairwise_distances(all_thetas)
         
-        for i in range(n_agents):
-            for j in range(n_agents):
-                if i != j:
-                    if self.kernel_type == "gaussian":
-                        densities[i] += gaussian_kernel(distances[i, j], self.sigma_density)
-                    else:
-                        raise NotImplementedError(f"Kernel type {self.kernel_type} not implemented")
+        if self.kernel_type == "gaussian":
+            # Compute kernel values for all pairs
+            kernel_values = gaussian_kernel_vectorized(distances, self.sigma_density)
+            # Zero out diagonal (don't count self)
+            np.fill_diagonal(kernel_values, 0)
+            # Sum across rows to get density at each position
+            densities = kernel_values.sum(axis=1)
+        else:
+            raise NotImplementedError(f"Kernel type {self.kernel_type} not implemented")
         
         return densities
     
