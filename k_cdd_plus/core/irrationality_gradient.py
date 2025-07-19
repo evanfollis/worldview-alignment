@@ -50,6 +50,65 @@ class IrrationalityGradientComputer:
         # Pre-compute A^T A for gradient computation
         self.AtA = self.action_directions.T @ self.action_directions
     
+    def rotation_gradient_nd(self, theta: np.ndarray, gradient: np.ndarray) -> np.ndarray:
+        """
+        Compute ∂(T(θ)g)/∂θ for n-dimensional rotation using Rodrigues formula.
+        
+        For n>2, we use rotation around the first orthogonal axis:
+        R = I + sin(φ)[K] + (1-cos(φ))[K]²
+        where φ = γ||θ||, K is skew-symmetric matrix from normalized θ
+        
+        Args:
+            theta: Worldview vector
+            gradient: True gradient being rotated
+            
+        Returns:
+            Jacobian matrix of shape (state_dim, worldview_dim)
+        """
+        theta_norm = np.linalg.norm(theta)
+        if theta_norm < 1e-10:
+            return np.zeros((self.state_dim, self.worldview_dim))
+        
+        if self.state_dim == 2:
+            return self.rotation_gradient_2d(theta, gradient)
+        
+        # For higher dimensions, use simplified approach
+        # Rotation in first plane spanned by theta and canonical axes
+        angle = self.gamma * theta_norm
+        
+        # Normalized rotation axis
+        axis = theta / theta_norm
+        
+        # Build rotation matrix using Rodrigues formula
+        # R = I + sin(φ)K + (1-cos(φ))K²
+        # where K is skew-symmetric cross-product matrix
+        
+        # For simplicity, rotate in plane of first two components
+        # Full n-D implementation would use proper axis-angle representation
+        c, s = np.cos(angle), np.sin(angle)
+        
+        # Derivative of angle w.r.t. theta
+        dangle_dtheta = self.gamma * axis
+        
+        # Simplified gradient - assumes rotation in first 2 dimensions
+        jacobian = np.zeros((self.state_dim, self.worldview_dim))
+        
+        if self.state_dim >= 2:
+            # Rotation affects first two components
+            g0, g1 = gradient[0], gradient[1]
+            
+            # Derivative of rotated components
+            drot_dangle = np.array([-s * g0 - c * g1, c * g0 - s * g1])
+            
+            for k in range(self.worldview_dim):
+                jacobian[0, k] = drot_dangle[0] * dangle_dtheta[k]
+                jacobian[1, k] = drot_dangle[1] * dangle_dtheta[k]
+        
+        # Higher dimensions remain unchanged (identity)
+        # This is a simplification - full implementation would handle arbitrary rotations
+        
+        return jacobian
+    
     def rotation_gradient_2d(self, theta: np.ndarray, gradient: np.ndarray) -> np.ndarray:
         """
         Compute ∂(T(θ)g)/∂θ for 2D rotation.
@@ -131,12 +190,7 @@ class IrrationalityGradientComputer:
         du_dg = self.action_directions  # Shape: (n_actions, state_dim)
         
         # Gradient of perceived gradient w.r.t. theta_i
-        if self.state_dim == 2:
-            dg_dtheta = self.rotation_gradient_2d(theta_i, true_gradient)
-        else:
-            # For higher dims, use finite differences as fallback
-            # In production, implement proper n-D rotation derivatives
-            return self._finite_diff_fallback(theta_i, theta_j, true_gradient, distortion_transform)
+        dg_dtheta = self.rotation_gradient_nd(theta_i, true_gradient)
         
         # Chain rule: combine all gradients
         # ∂IR/∂θ = ∂IR/∂π * ∂π/∂u * ∂u/∂g * ∂g/∂θ

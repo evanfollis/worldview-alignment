@@ -77,8 +77,8 @@ def compute_action_distribution(
     else:
         # For higher dims, use random directions on unit sphere
         # In practice, could use fixed directions (e.g., axis-aligned + diagonals)
-        np.random.seed(42)  # Fixed seed for reproducibility
-        action_dirs = np.random.randn(n_discrete_actions, state_dim)
+        rng = np.random.RandomState(42)  # Fixed seed for reproducibility
+        action_dirs = rng.randn(n_discrete_actions, state_dim)
         action_dirs = action_dirs / np.linalg.norm(action_dirs, axis=1, keepdims=True)
     
     # Compute utility of each action as dot product with gradient

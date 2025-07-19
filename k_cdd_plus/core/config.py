@@ -59,6 +59,7 @@ class SimulationConfig:
     state_dim: int
     worldview_dim: int
     seed: Optional[int] = None
+    use_vectorized_update: bool = True  # Enable vectorized social dynamics
     
     # Component configurations
     utility: Optional[UtilityConfig] = None

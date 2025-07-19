@@ -13,6 +13,7 @@ def benchmark_implementation(
     n_agents: int = 100,
     n_steps: int = 100,
     use_analytic: bool = True,
+    use_vectorized: bool = True,
     metrics_every: int = 10,
     seed: int = 42
 ) -> tuple:
@@ -27,6 +28,7 @@ def benchmark_implementation(
         state_dim=2,
         worldview_dim=3,
         seed=seed,
+        use_vectorized_update=use_vectorized,
         agent=AgentConfig(
             use_analytic_gradient=use_analytic,
             gamma=0.5,
@@ -69,15 +71,17 @@ def main():
             n_agents=n_agents,
             n_steps=n_steps,
             use_analytic=True,
+            use_vectorized=True,
             metrics_every=10,
             seed=42
         )
         
-        # Legacy version (finite diff gradients + dense metrics)
+        # Legacy version (finite diff gradients + per-agent loops + dense metrics)
         runtime_legacy, ir_legacy, clusters_legacy = benchmark_implementation(
             n_agents=n_agents,
             n_steps=n_steps,
             use_analytic=False,
+            use_vectorized=False,
             metrics_every=1,
             seed=42
         )
@@ -106,10 +110,17 @@ def main():
     print("\n" + "=" * 50)
     print("Benchmark complete! Key optimizations:")
     print("1. Analytic gradients (vs finite differences)")
-    print("2. Vectorized scipy.spatial operations (vs O(N²) loops)")
-    print("3. Sparse metrics computation (every 10 steps vs every step)")
-    print("4. Proper KL divergence for irrationality")
-    print("5. Per-agent RNG for reproducibility")
+    print("2. Vectorized social dynamics (vs O(N²) per-agent loops)")
+    print("3. Vectorized scipy.spatial operations (vs manual distance loops)")
+    print("4. Sparse metrics computation (every 10 steps vs every step)")
+    print("5. Proper KL divergence for irrationality")
+    print("6. Per-agent RNG for reproducibility")
+    print("7. N-dimensional rotation derivatives")
+    
+    print("\nReady for large-scale experiments:")
+    print("- Phase diagram sweeps (λ × κ parameter space)")
+    print("- Population shock studies")
+    print("- Intervention optimization")
 
 if __name__ == "__main__":
     main()

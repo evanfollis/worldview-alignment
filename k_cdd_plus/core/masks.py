@@ -29,7 +29,8 @@ class IssueMasks:
                  worldview_dim: int,
                  tau_value: float = 0.5,
                  tau_participation: float = 0.3,
-                 noise_scale: float = 0.1):
+                 noise_scale: float = 0.1,
+                 rng: Optional[np.random.RandomState] = None):
         """
         Initialize issue mask generator.
         
@@ -38,11 +39,13 @@ class IssueMasks:
             tau_value: Temperature for value mask sigmoid
             tau_participation: Temperature for participation gate sigmoid
             noise_scale: Scale of noise added to masks
+            rng: Random number generator for reproducibility
         """
         self.worldview_dim = worldview_dim
         self.tau_value = tau_value
         self.tau_participation = tau_participation
         self.noise_scale = noise_scale
+        self.rng = rng if rng is not None else np.random.RandomState()
     
     def generate_event(self,
                       focus_dims: Optional[np.ndarray] = None,
@@ -64,12 +67,12 @@ class IssueMasks:
         if focus_dims is None:
             if sparse:
                 n_active = max(1, int(0.3 * self.worldview_dim))
-                focus_dims = np.random.choice(self.worldview_dim, n_active, replace=False)
+                focus_dims = self.rng.choice(self.worldview_dim, n_active, replace=False)
             else:
                 focus_dims = np.arange(self.worldview_dim)
         
         for dim in focus_dims:
-            event[dim] = intensity * (0.5 + 0.5 * np.random.rand())
+            event[dim] = intensity * (0.5 + 0.5 * self.rng.rand())
         
         return event
     
@@ -86,7 +89,7 @@ class IssueMasks:
         Returns:
             Sensitivity vector of shape (worldview_dim,)
         """
-        profile = np.random.normal(mean_sensitivity, heterogeneity, self.worldview_dim)
+        profile = self.rng.normal(mean_sensitivity, heterogeneity, self.worldview_dim)
         return np.clip(profile, 0.0, 1.0)
     
     def compute_value_mask(self,
@@ -107,7 +110,7 @@ class IssueMasks:
         activation = sensitivity * event
         
         if add_noise:
-            noise = np.random.normal(0, self.noise_scale, self.worldview_dim)
+            noise = self.rng.normal(0, self.noise_scale, self.worldview_dim)
             activation += noise
         
         return sigmoid(activation, self.tau_value)
@@ -131,7 +134,7 @@ class IssueMasks:
         activation = mean_sensitivity * np.sum(event)
         
         if add_noise:
-            noise = np.random.normal(0, self.noise_scale)
+            noise = self.rng.normal(0, self.noise_scale)
             activation += noise
         
         return float(sigmoid(np.array([activation]), self.tau_participation)[0])
